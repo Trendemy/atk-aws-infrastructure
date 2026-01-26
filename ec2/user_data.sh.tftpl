@@ -1,0 +1,63 @@
+#!/bin/bash
+set -euxo pipefail
+
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -y
+  apt-get install -y docker.io curl unzip
+elif command -v dnf >/dev/null 2>&1; then
+  dnf -y install docker curl unzip
+else
+  yum -y install docker curl unzip
+fi
+
+systemctl enable docker
+systemctl start docker
+usermod -aG docker ubuntu || true
+
+if ! command -v aws >/dev/null 2>&1 || ! aws --version 2>/dev/null | grep -q "aws-cli/2"; then
+  curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp
+  /tmp/aws/install
+fi
+
+if [ -n "${docker_registry_login}" ]; then
+  bash -lc "${docker_registry_login}"
+fi
+
+if [ -n "${ecr_registry_url}" ]; then
+  aws ecr get-login-password --region ${ecr_region} | docker login --username AWS --password-stdin ${ecr_registry_url}
+fi
+
+docker network create ${docker_network_name} || true
+
+docker pull ${atk_client_image}
+docker pull ${atk_dashboard_ui_image}
+docker pull ${atk_dashboard_server_image}
+
+docker rm -f atk-client || true
+docker rm -f atk-dashboard-ui || true
+docker rm -f atk-dashboard-server || true
+
+docker run -d --restart=always \
+  --name atk-client \
+  --network ${docker_network_name} \
+  -p ${web_client_host_port}:${web_client_container_port} \
+  ${atk_client_image}
+
+docker run -d --restart=always \
+  --name atk-dashboard-ui \
+  --network ${docker_network_name} \
+  -p ${dashboard_web_host_port}:${dashboard_web_container_port} \
+  ${atk_dashboard_ui_image}
+
+docker run -d --restart=always \
+  --name atk-dashboard-server \
+  --network ${docker_network_name} \
+  -p ${dashboard_admin_host_port}:${dashboard_admin_container_port} \
+  ${atk_dashboard_server_image}
+
+if [ -n "${user_data_extra}" ]; then
+  cat <<'EXTRA_CMDS' | bash
+${user_data_extra}
+EXTRA_CMDS
+fi
